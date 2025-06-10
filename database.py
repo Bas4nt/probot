@@ -2,6 +2,12 @@ import psycopg2
 from psycopg2 import sql
 import os
 from dotenv import load_dotenv
+import time
+import logging
+
+# Set up logging for database operations
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -13,20 +19,29 @@ class Database:
         self.connect()
         self.create_tables()
 
-    def connect(self):
-        try:
-            if self.conn is None or self.conn.closed:
-                self.conn = psycopg2.connect(
-                    dbname=os.getenv("PGDATABASE"),
-                    user=os.getenv("PGUSER"),
-                    password=os.getenv("PGPASSWORD"),
-                    host=os.getenv("PGHOST"),
-                    port=os.getenv("PGPORT")
-                )
-                self.cursor = self.conn.cursor()
-        except psycopg2.Error as e:
-            print(f"Database connection failed: {e}")
-            raise
+    def connect(self, retries=3, delay=5):
+        attempt = 0
+        while attempt < retries:
+            try:
+                if self.conn is None or self.conn.closed:
+                    logger.info("Attempting to connect to PostgreSQL database...")
+                    self.conn = psycopg2.connect(
+                        dbname=os.getenv("PGDATABASE"),
+                        user=os.getenv("PGUSER"),
+                        password=os.getenv("PGPASSWORD"),
+                        host=os.getenv("PGHOST"),
+                        port=os.getenv("PGPORT")
+                    )
+                    self.cursor = self.conn.cursor()
+                    logger.info("Successfully connected to PostgreSQL database.")
+                    return  # Connection successful
+            except psycopg2.Error as e:
+                attempt += 1
+                if attempt == retries:
+                    logger.error(f"Failed to connect to database after {retries} attempts: {e}")
+                    raise Exception(f"Failed to connect to database after {retries} attempts: {e}")
+                logger.warning(f"Connection attempt {attempt} failed: {e}. Retrying in {delay} seconds...")
+                time.sleep(delay)
 
     def create_tables(self):
         self.connect()  # Ensure connection is active
@@ -48,6 +63,7 @@ class Database:
             );
         """)
         self.conn.commit()
+        logger.info("Database tables created or verified.")
 
     def add_filter(self, trigger, reply):
         self.connect()
@@ -103,3 +119,4 @@ class Database:
             self.cursor.close()
         if self.conn:
             self.conn.close()
+        logger.info("Database connection closed.")
