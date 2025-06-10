@@ -1,10 +1,9 @@
 import os
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 )
-from telegram import InputMediaPhoto
 from database import Database
 from meme_utils import create_meme
 from dotenv import load_dotenv
@@ -17,10 +16,9 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TENOR_API_KEY = os.getenv("TENOR_API_KEY")
 
-# Initialize database
-db = Database()
+# Initialize database with bot instance
+db = Database(bot=Bot(token=BOT_TOKEN))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎉 Welcome to GroupPal! I'm your group manager and meme buddy. Use /help for commands.")
@@ -40,6 +38,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     🧑‍💻 Admin:
     /logs - View recent moderation logs (admin only)
+    /getchatid - Get the chat ID for logging
     """
     await update.message.reply_text(help_text)
 
@@ -52,7 +51,7 @@ async def add_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = " ".join(context.args[1:])
     db.add_filter(trigger, reply)
     await update.message.reply_text(f"✅ Filter added: '{trigger}' -> '{reply}'")
-    db.log_action(update.message.from_user.id, f"Added filter: {trigger}")
+    await db.log_action(update.message.from_user.id, f"Added filter: {trigger}")
 
 async def list_filters(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filters = db.get_filters()
@@ -69,7 +68,7 @@ async def remove_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
     trigger = context.args[1]
     db.remove_filter(trigger)
     await update.message.reply_text(f"🗑️ Filter '{trigger}' removed.")
-    db.log_action(update.message.from_user.id, f"Removed filter: {trigger}")
+    await db.log_action(update.message.from_user.id, f"Removed filter: {trigger}")
 
 # Moderation: Quote message
 async def quote(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -82,7 +81,7 @@ async def quote(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = msg.text or msg.caption or "No text"
     quote_text = f"📌 [Quote from @{author} at {timestamp}]\n“{text}”"
     await update.message.reply_text(quote_text)
-    db.log_action(update.message.from_user.id, f"Quoted message ID: {msg.message_id}")
+    await db.log_action(update.message.from_user.id, f"Quoted message ID: {msg.message_id}")
 
 # Entertainment: Kang sticker
 async def kang(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -93,7 +92,7 @@ async def kang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.message.from_user.id
     db.add_sticker(user_id, sticker.file_id)
     await update.message.reply_text("🐸 Kangged! Added to your sticker collection.")
-    db.log_action(user_id, "Kangged a sticker")
+    await db.log_action(user_id, "Kangged a sticker")
 
 # Entertainment: Show sticker pack
 async def stickerpack(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -131,7 +130,7 @@ async def mmf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await context.bot.get_file(file_id)
     meme_path = create_meme(file.file_path, text)
     await update.message.reply_sticker(open(meme_path, "rb"))
-    db.log_action(update.message.from_user.id, f"Created meme with text: {text}")
+    await db.log_action(update.message.from_user.id, f"Created meme with text: {text}")
 
 # Anti-spam: Rate limiting
 user_message_count = {}
@@ -163,6 +162,10 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_admins = await context.bot.get_chat_administrators(update.message.chat_id)
     return any(admin.user.id == user_id for admin in chat_admins)
 
+# Get chat ID for logging
+async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Chat ID: {update.message.chat_id}")
+
 # Filter message handler
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text:
@@ -170,7 +173,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for trigger, reply in filters:
             if trigger.lower() in update.message.text.lower():
                 await update.message.reply_text(reply)
-                db.log_action(update.message.from_user.id, f"Triggered filter: {trigger}")
+                await db.log_action(update.message.from_user.id, f"Triggered filter: {trigger}")
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -184,11 +187,16 @@ def main():
     app.add_handler(CommandHandler("stickerpack", stickerpack))
     app.add_handler(CommandHandler("mmf", mmf))
     app.add_handler(CommandHandler("logs", logs))
+    app.add_handler(CommandHandler("getchatid", get_chat_id))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.Sticker.ALL | filters.PHOTO | filters.ANIMATION, anti_spam))
     app.add_handler(CallbackQueryHandler(button_callback))
 
-    app.run_polling()
+    # Graceful shutdown
+    try:
+        app.run_polling()
+    finally:
+        db.close()  # Close database connection on shutdown
 
 if __name__ == "__main__":
     main()
